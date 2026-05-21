@@ -1209,8 +1209,13 @@ def generate_video_openai():
 
         uploaded_files = []
 
-        if 'files' in request.files:
-            files = request.files.getlist('files')
+        incoming_files = []
+        for field_name in ('files', 'images'):
+            if field_name in request.files:
+                incoming_files.extend(request.files.getlist(field_name))
+
+        if incoming_files:
+            files = incoming_files
             for i, file in enumerate(files):
                 if file and allowed_file(file.filename):
                     filename = f"{int(time.time())}_{i}_{secure_filename(file.filename)}"
@@ -1325,8 +1330,13 @@ def generate_video():
 
         uploaded_files = []
 
-        if 'files' in request.files:
-            files = request.files.getlist('files')
+        incoming_files = []
+        for field_name in ('files', 'images'):
+            if field_name in request.files:
+                incoming_files.extend(request.files.getlist(field_name))
+
+        if incoming_files:
+            files = incoming_files
             for i, file in enumerate(files):
                 if file and allowed_file(file.filename):
                     filename = f"{int(time.time())}_{i}_{secure_filename(file.filename)}"
