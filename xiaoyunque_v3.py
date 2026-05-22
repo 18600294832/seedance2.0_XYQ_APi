@@ -41,7 +41,7 @@ class Config:
     output_dir: str = os.environ.get('OUTPUT_DIR', 'downloads')
     max_image_size: int = int(os.environ.get('MAX_IMAGE_SIZE', 20 * 1024 * 1024))
     page_load_timeout: int = int(os.environ.get('PAGE_LOAD_TIMEOUT', 30))
-    api_timeout: int = int(os.environ.get('API_TIMEOUT', 60))
+    api_timeout: int = int(os.environ.get('API_TIMEOUT', 180))
     upload_timeout: int = int(os.environ.get('UPLOAD_TIMEOUT', 120))
     download_timeout: int = int(os.environ.get('DOWNLOAD_TIMEOUT', 600))
     browser_idle_timeout: int = int(os.environ.get('BROWSER_IDLE_TIMEOUT', 600))
@@ -312,7 +312,21 @@ async def api_post(page: Page, url: str, body_dict: dict, timeout: int = None, c
             return JSON.stringify({{error: e.toString()}});
         }}
     }}'''
-    result = await asyncio.wait_for(page.evaluate(js), timeout=timeout + 10)
+    try:
+        result = await asyncio.wait_for(page.evaluate(js), timeout=timeout + 10)
+    except asyncio.TimeoutError as e:
+        raise APIException(ErrorCode.TIMEOUT, f'API请求超时: {url} ({timeout}s)') from e
+
+    try:
+        result_json = json.loads(result)
+    except (json.JSONDecodeError, TypeError):
+        result_json = None
+    if isinstance(result_json, dict) and result_json.get('error'):
+        err = str(result_json.get('error'))
+        if 'abort' in err.lower() or 'timeout' in err.lower():
+            raise APIException(ErrorCode.TIMEOUT, f'API请求超时: {url} ({timeout}s)')
+        raise APIException(ErrorCode.REQUEST_FAILED, f'API请求失败: {url} - {err}')
+
     if cookie_name and not skip_rate_limit:
         rate_limiter.record_request(cookie_name)
     return result
@@ -752,9 +766,13 @@ async def run_with_cookie(prompt: str, duration: int, ratio: str, model: str,
 
     except APIException:
         raise
+    except asyncio.TimeoutError as e:
+        traceback.print_exc()
+        raise APIException(ErrorCode.TIMEOUT, str(e) or '操作超时') from e
     except Exception as e:
         traceback.print_exc()
-        raise APIException(ErrorCode.BROWSER_ERROR, str(e))
+        detail = str(e) or e.__class__.__name__
+        raise APIException(ErrorCode.BROWSER_ERROR, detail) from e
     finally:
         if page:
             try:

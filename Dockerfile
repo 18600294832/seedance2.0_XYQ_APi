@@ -17,7 +17,7 @@ ENV PYTHONUNBUFFERED=1 \
     # 并发配置（单 Worker + 多线程，因为 BrowserSession/AsyncTaskManager 是单例）
     GUNICORN_WORKERS=1 \
     GUNICORN_THREADS=20 \
-    MAX_WORKERS=20 \
+    MAX_WORKERS=1 \
     # 浏览器配置
     PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
     HEADLESS=true \
@@ -26,7 +26,7 @@ ENV PYTHONUNBUFFERED=1 \
     CHROMIUM_MEMORY_LIMIT=400 \
     # 超时配置
     TASK_TIMEOUT=1800 \
-    API_TIMEOUT=60 \
+    API_TIMEOUT=180 \
     UPLOAD_TIMEOUT=120 \
     DOWNLOAD_TIMEOUT=600
 

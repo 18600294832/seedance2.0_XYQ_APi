@@ -15,15 +15,14 @@ services:
       # Gunicorn 并发配置（单 Worker + 多线程，因为 BrowserSession/AsyncTaskManager 是单例）
       - GUNICORN_WORKERS=${GUNICORN_WORKERS:-1}
       - GUNICORN_THREADS=${GUNICORN_THREADS:-20}
-      # 任务队列并发（单 worker 可处理 MAX_WORKERS 个任务）
-      # 实际并发 = MAX_WORKERS = 20 并发任务
-      - MAX_WORKERS=${MAX_WORKERS:-20}
+      # 任务队列并发（单 Cookie 建议 1，避免同账号并发提交触发远端超时/限流）
+      - MAX_WORKERS=${MAX_WORKERS:-1}
       # 浏览器配置
       - HEADLESS=true
       - BROWSER_IDLE_TIMEOUT=600
       # 超时配置
       - TASK_TIMEOUT=${TASK_TIMEOUT:-7200}
-      - API_TIMEOUT=60
+      - API_TIMEOUT=180
       - UPLOAD_TIMEOUT=120
       - DOWNLOAD_TIMEOUT=600
       # 时区

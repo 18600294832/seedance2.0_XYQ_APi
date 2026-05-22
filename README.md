@@ -191,7 +191,7 @@ curl -o video.mp4 http://localhost:8033/api/video/{task_id}
 |------|--------|------|
 | `PORT` | `8033` | 服务端口 |
 | `HOST` | `0.0.0.0` | 监听地址 |
-| `MAX_WORKERS` | `1`（本地）/ `20`（Docker） | 最大并发任务数 |
+| `MAX_WORKERS` | `1` | 最大并发任务数（单 Cookie 建议保持 1） |
 | `TASK_TIMEOUT` | `1200`（本地）/ `7200`（Docker） | 单任务超时（秒） |
 | `HEADLESS` | `true` | 无头浏览器模式 |
 | `BROWSER_IDLE_TIMEOUT` | `600` | 浏览器空闲超时（秒） |
