@@ -30,7 +30,7 @@ from typing import Optional, Dict, List, Any
 from dataclasses import dataclass, field
 from enum import Enum
 
-from playwright.async_api import async_playwright, Playwright, Browser, BrowserContext, Page
+from playwright.async_api import async_playwright, Playwright, Browser, BrowserContext, Page, TimeoutError as PlaywrightTimeoutError
 
 # ==================== 配置系统 ====================
 
@@ -46,6 +46,7 @@ class Config:
     download_timeout: int = int(os.environ.get('DOWNLOAD_TIMEOUT', 600))
     browser_idle_timeout: int = int(os.environ.get('BROWSER_IDLE_TIMEOUT', 600))
     app_id: str = os.environ.get('APP_ID', '795647')
+    base_url: str = os.environ.get('XYQ_BASE_URL', 'https://xyq.jianying.com').rstrip('/')
     headless: bool = os.environ.get('HEADLESS', 'true').lower() == 'true'
     # v4: API 调用最小间隔
     min_api_interval: float = float(os.environ.get('MIN_API_INTERVAL', '3.0'))
@@ -102,6 +103,18 @@ def log(msg):
     t = time.strftime('%H:%M:%S')
     print(f'[{t}] {msg}', flush=True)
 
+def build_api_url(url: str) -> str:
+    if url.startswith('http://') or url.startswith('https://'):
+        return url
+    if not url.startswith('/'):
+        url = '/' + url
+    return f'{config.base_url}{url}'
+
+def preview_text(text: str, limit: int = 500) -> str:
+    text = text or ''
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text if len(text) <= limit else text[:limit] + '...'
+
 # ==================== 模型映射 ====================
 
 MODELS = {
@@ -117,6 +130,8 @@ MODEL_LABELS = {
 MODEL_CREDITS_PER_SEC = {
     'fast': 5,
     '2.0': 8,
+    'seedance2.0_fast_direct': 5,
+    'seedance2.0_direct': 8,
 }
 
 # ==================== Token 管理 ====================
@@ -295,25 +310,35 @@ async def api_post(page: Page, url: str, body_dict: dict, timeout: int = None, c
     if cookie_name and not skip_rate_limit:
         await rate_limiter.wait_if_needed(cookie_name)
     body_json = json.dumps(body_dict, ensure_ascii=False)
-    body_safe = body_json.replace("\\", "\\\\").replace("'", "\\'")
-    js = f'''async () => {{
-        try {{
+    js = '''async ({url, bodyJson, timeoutMs}) => {
+        try {
             const ctrl = new AbortController();
-            const timer = setTimeout(() => ctrl.abort(), {timeout * 1000});
-            const r = await fetch("{url}", {{
+            const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+            const r = await fetch(url, {
                 method: "POST",
-                headers: {{"Content-Type": "application/json"}},
-                body: '{body_safe}',
+                credentials: "include",
+                headers: {
+                    "Accept": "application/json, text/plain, */*",
+                    "Content-Type": "application/json"
+                },
+                body: bodyJson,
                 signal: ctrl.signal
-            }});
+            });
             clearTimeout(timer);
             return await r.text();
-        }} catch(e) {{
-            return JSON.stringify({{error: e.toString()}});
-        }}
-    }}'''
+        } catch(e) {
+            return JSON.stringify({error: e.toString()});
+        }
+    }'''
     try:
-        result = await asyncio.wait_for(page.evaluate(js), timeout=timeout + 10)
+        result = await asyncio.wait_for(
+            page.evaluate(js, {
+                'url': url,
+                'bodyJson': body_json,
+                'timeoutMs': timeout * 1000,
+            }),
+            timeout=timeout + 10
+        )
     except asyncio.TimeoutError as e:
         raise APIException(ErrorCode.TIMEOUT, f'API请求超时: {url} ({timeout}s)') from e
 
@@ -326,6 +351,43 @@ async def api_post(page: Page, url: str, body_dict: dict, timeout: int = None, c
         if 'abort' in err.lower() or 'timeout' in err.lower():
             raise APIException(ErrorCode.TIMEOUT, f'API请求超时: {url} ({timeout}s)')
         raise APIException(ErrorCode.REQUEST_FAILED, f'API请求失败: {url} - {err}')
+
+    if cookie_name and not skip_rate_limit:
+        rate_limiter.record_request(cookie_name)
+    return result
+
+async def api_post_request_context(page: Page, url: str, body_dict: dict, timeout: int = None,
+                                   cookie_name: str = None, skip_rate_limit: bool = False,
+                                   log_response: bool = False) -> str:
+    timeout = timeout or config.api_timeout
+    if cookie_name and not skip_rate_limit:
+        await rate_limiter.wait_if_needed(cookie_name)
+
+    full_url = build_api_url(url)
+    body_json = json.dumps(body_dict, ensure_ascii=False)
+    try:
+        response = await page.context.request.post(
+            full_url,
+            data=body_json,
+            headers={
+                'Accept': 'application/json, text/plain, */*',
+                'Content-Type': 'application/json',
+                'Origin': config.base_url,
+                'Referer': f'{config.base_url}/home',
+            },
+            timeout=timeout * 1000,
+        )
+        result = await response.text()
+    except (PlaywrightTimeoutError, asyncio.TimeoutError) as e:
+        raise APIException(ErrorCode.TIMEOUT, f'API请求超时: {url} ({timeout}s)') from e
+    except Exception as e:
+        raise APIException(ErrorCode.REQUEST_FAILED, f'API请求失败: {url} - {type(e).__name__}: {e}') from e
+
+    if log_response:
+        log(f'  [submit_run] HTTP {response.status}, {len(result)}B, body={preview_text(result, 800)}')
+
+    if response.status >= 400:
+        raise APIException(ErrorCode.REQUEST_FAILED, f'HTTP {response.status}: {preview_text(result)}')
 
     if cookie_name and not skip_rate_limit:
         rate_limiter.record_request(cookie_name)
@@ -463,13 +525,14 @@ async def submit_task(page: Page, prompt: str, images: list, duration: int,
                      ratio: str, model: str, workspace_id: str, cookie_name: str = None) -> str:
     thread_id = str(uuid.uuid4())
     run_id = str(uuid.uuid4())
+    submit_model = MODELS.get(model, model)
 
     param = {
         'prompt': prompt,
         'images': images,
         'duration_sec': duration,
         'ratio': ratio,
-        'model': model,
+        'model': submit_model,
         'language': 'zh',
         'imitation_videos': [],
         'videos': [],
@@ -503,7 +566,20 @@ async def submit_task(page: Page, prompt: str, images: list, duration: int,
         'entrance_from': 'web',
     }
 
-    resp = json.loads(await api_post(page, '/api/biz/v1/agent/submit_run', payload, cookie_name=cookie_name))
+    log(f'  [submit_run] prompt={len(prompt)}字, images={len(images)}, duration={duration}, '
+        f'ratio={ratio}, model={submit_model}, thread_id={thread_id}')
+    raw_resp = await api_post_request_context(
+        page,
+        '/api/biz/v1/agent/submit_run',
+        payload,
+        cookie_name=cookie_name,
+        log_response=True,
+    )
+    try:
+        resp = json.loads(raw_resp)
+    except json.JSONDecodeError as e:
+        raise APIException(ErrorCode.REQUEST_FAILED, f'submit_run 返回非JSON: {preview_text(raw_resp)}') from e
+
     ret_code = str(resp.get('ret'))
     if ret_code != '0':
         err_msg = resp.get('errmsg', '')
